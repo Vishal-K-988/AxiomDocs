@@ -1,0 +1,17 @@
+fastapi>=0.95.0
+uvicorn>=0.21.0
+# Database ORM 
+sqlalchemy>=2.0.0
+# used with sqlalchemy for database migrations like adding colums and sfnmds
+alembic>=1.10.0
+# used to interacting with aws s3 
+boto3>=1.26.0
+# used to handle multipart/form-data, for uploading files 
+python-multipart>=0.0.6
+# validation part 
+pydantic>=1.10.0,<2.0.0
+# loading environment variables from .env file
+python-dotenv>=0.21.0
+# JWT verification
+python-jose[cryptography]>=3.3.0
+requests>=2.31.0
