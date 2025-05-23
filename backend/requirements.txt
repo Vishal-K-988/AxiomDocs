@@ -15,3 +15,7 @@ python-dotenv>=0.21.0
 # JWT verification
 python-jose[cryptography]>=3.3.0
 requests>=2.31.0
+# PDF processing
+PyMuPDF>=1.23.0
+# Vector DB
+chromadb>=0.4.22

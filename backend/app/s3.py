@@ -44,11 +44,23 @@ def generate_presigned_url(s3_key: str, expiration: int = 3600) -> Optional[str]
 def upload_file_to_s3(file_data: bytes, 
                       file_extension: str, 
                       user_id: str = "temp_user"
-                      ) -> Optional[str]:
-
+                      ) -> str:
+    """
+    Upload a file to S3 and return the S3 key.
+    
+    Args:
+        file_data: The file content as bytes
+        file_extension: The file extension (including the dot)
+        user_id: The user ID for organizing files
+        
+    Returns:
+        str: The S3 key where the file was uploaded
+        
+    Raises:
+        Exception: If the upload fails
+    """
     try:
-        # Creating a user specific folder as we are integating the clerk authentication
-        #adn with the help of htat we need to organize the file w.r.t each user ! 
+        # Creating a user specific folder
         s3_key = f"users/{user_id}/{uuid.uuid4()}{file_extension}"
 
         s3_client.put_object(
@@ -58,8 +70,9 @@ def upload_file_to_s3(file_data: bytes,
         )
         return s3_key
     except ClientError as e:
-        print(f"Error uploading file to S3: {e}")
-        return None
+        error_msg = f"Error uploading file to S3: {str(e)}"
+        print(error_msg)
+        raise Exception(error_msg)
 
 
 # 2. Deleting file 
