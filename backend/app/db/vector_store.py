@@ -9,47 +9,47 @@ import logging
 import gc
 from functools import lru_cache
 import re
+from app.utils.gemini_embeddings import get_embedding_dimension
+import torch
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class VectorStore:
-    def __init__(self, dimension: int = 384, nlist: int = 100):
+    def __init__(self, dimension: Optional[int] = 384, nlist: int = 100):
         """
-        Initialize the vector store with an optimized HNSW index and quantization.
+        Initialize the vector store.
         
         Args:
-            dimension: Dimension of the vectors (default: 384 for all-MiniLM-L6-v2)
-            nlist: Maximum number of clusters for IVF index (default: 100)
+            dimension: The dimension of the embeddings (default: 384 for Gemini)
+            nlist: Number of clusters for IVF index (default: 100)
         """
-        logger.info(f"Initializing vector store with dimension={dimension}, max_nlist={nlist}")
         self.dimension = dimension
-        self.max_nlist = nlist
-        self.nlist = None  # Will be set dynamically based on data size
-        
-        # Create a quantizer for product quantization
-        self.quantizer = faiss.IndexFlatL2(dimension)
-        
-        # Initialize metadata storage
-        self.metadata: List[Dict[str, Any]] = []
-        self.documents: List[str] = []
-        
-        # Create storage directory if it doesn't exist
-        self.storage_dir = Path("chroma_db")
+        self.nlist = nlist
+        self.documents = []
+        self.metadata = []
+        self.storage_dir = Path("vector_store")
         self.storage_dir.mkdir(exist_ok=True)
         
-        # Try to load existing index
-        self._load_index()
+        # Initialize GPU resources if available
+        self.use_gpu = torch.cuda.is_available()
+        if self.use_gpu:
+            try:
+                self.gpu_resources = faiss.StandardGpuResources()
+                logger.info("Successfully initialized GPU resources")
+            except Exception as e:
+                logger.warning(f"Failed to initialize GPU resources: {str(e)}")
+                self.use_gpu = False
         
-        # Initialize GPU if available
-        if faiss.get_num_gpus() > 0:
-            logger.info("GPU available, initializing GPU resources")
-            self.gpu_resources = faiss.StandardGpuResources()
-            self.use_gpu = True
-        else:
-            logger.info("No GPU available, using CPU")
-            self.use_gpu = False
+        # Initialize the quantizer
+        self.quantizer = faiss.IndexFlatL2(self.dimension)
+        
+        # Initialize the index
+        self.index = faiss.IndexFlatL2(self.dimension)
+        
+        # Load existing index if available
+        self._load_index()
     
     def _preprocess_text(self, text: str) -> str:
         """Preprocess text for better search results."""
@@ -101,20 +101,19 @@ class VectorStore:
     
     def _create_index(self, n_vectors: int):
         """Create a new index with appropriate parameters based on data size."""
-        # Calculate number of clusters based on data size
-        # Use a more conservative approach: min(sqrt(n), max_nlist, n/4)
-        self.nlist = min(
-            int(np.sqrt(n_vectors)),  # Square root of data size
-            self.max_nlist,           # Maximum allowed clusters
-            max(1, n_vectors // 4)    # At least 4 vectors per cluster
-        )
-        
-        # Ensure at least 1 cluster and at most n_vectors/2 clusters
-        self.nlist = max(1, min(self.nlist, n_vectors // 2))
-        
-        logger.info(f"Creating index with {self.nlist} clusters for {n_vectors} vectors")
-        
         try:
+            # Calculate number of clusters based on data size
+            self.nlist = min(
+                int(np.sqrt(n_vectors)),  # Square root of data size
+                self.nlist,              # Maximum allowed clusters
+                max(1, n_vectors // 4)    # At least 4 vectors per cluster
+            )
+            
+            # Ensure at least 1 cluster and at most n_vectors/2 clusters
+            self.nlist = max(1, min(self.nlist, n_vectors // 2))
+            
+            logger.info(f"Creating index with {self.nlist} clusters for {n_vectors} vectors")
+            
             # Create the IVF index with product quantization
             self.index = faiss.IndexIVFPQ(
                 self.quantizer, 
@@ -226,8 +225,12 @@ class VectorStore:
             logger.info(f"Adding {len(documents)} documents to vector store")
             start_time = time.time()
             
-            # Convert all embeddings to float32
-            embeddings_array = np.array(embeddings).astype('float32')
+            # Ensure all embeddings are numpy arrays of float32
+            embeddings_array = np.array([np.array(emb, dtype=np.float32) for emb in embeddings])
+            
+            # Verify dimensions
+            if not all(emb.shape[0] == self.dimension for emb in embeddings_array):
+                raise ValueError(f"Embedding dimensions do not match. Expected {self.dimension}, got shapes: {[emb.shape for emb in embeddings_array]}")
             
             # Create or update index if needed
             if not hasattr(self, 'index') or self.index is None:
@@ -283,13 +286,26 @@ class VectorStore:
             
             return list(range(start_idx, start_idx + len(documents)))
         except Exception as e:
-            logger.error(f"Error adding documents: {str(e)}")
+            logger.error(f"Error adding documents: {str(e)}", exc_info=True)
             raise
     
     def _search_impl(self, query_embedding: np.ndarray, n_results: int) -> Dict[str, List]:
         """Internal search implementation."""
         try:
-            query_embedding = query_embedding.astype('float32').reshape(1, -1)
+            if not hasattr(self, 'index') or self.index is None:
+                raise ValueError("Vector store index is not initialized")
+            
+            if self.index.ntotal == 0:
+                raise ValueError("Vector store is empty - no documents have been added")
+            
+            # Ensure query embedding has correct shape and type
+            query_embedding = np.array(query_embedding, dtype=np.float32)
+            if len(query_embedding.shape) == 1:
+                query_embedding = query_embedding.reshape(1, -1)
+            
+            # Verify dimension matches
+            if query_embedding.shape[1] != self.dimension:
+                raise ValueError(f"Query embedding dimension {query_embedding.shape[1]} does not match index dimension {self.dimension}")
             
             # Set search parameters for IVF index
             if hasattr(self.index, 'nprobe'):
@@ -343,7 +359,7 @@ class VectorStore:
             
             return filtered_results
         except Exception as e:
-            logger.error(f"Error in search implementation: {str(e)}")
+            logger.error(f"Error in search implementation: {str(e)}", exc_info=True)
             raise
     
     def search_similar(
@@ -358,6 +374,16 @@ class VectorStore:
             logger.info(f"Searching for {n_results} similar documents")
             start_time = time.time()
             
+            # Verify vector store state before search
+            state = self.verify_state()
+            logger.info(f"Vector store state before search: {json.dumps(state, indent=2)}")
+            
+            if not state["index_exists"]:
+                raise ValueError("Vector store index is not initialized")
+            
+            if state["total_vectors"] == 0:
+                raise ValueError("Vector store is empty - no documents have been added")
+            
             results = self._search_impl(query_embedding, n_results)
             
             end_time = time.time()
@@ -365,7 +391,7 @@ class VectorStore:
             logger.info(f"Found {len(results['documents'])} results")
             return results
         except Exception as e:
-            logger.error(f"Error searching documents: {str(e)}")
+            logger.error(f"Error searching documents: {str(e)}", exc_info=True)
             raise
     
     def get_collection_stats(self) -> Dict[str, Any]:
@@ -373,22 +399,26 @@ class VectorStore:
         Get statistics about the vector store.
         """
         try:
+            # Ensure index exists
+            if not hasattr(self, 'index') or self.index is None:
+                self.index = faiss.IndexFlatL2(self.dimension)
+            
             stats = {
                 "count": len(self.documents),
-                "total_vectors": self.index.ntotal if hasattr(self, 'index') and self.index is not None else 0,
+                "total_vectors": self.index.ntotal if hasattr(self.index, 'ntotal') else 0,
                 "dimension": self.dimension,
-                "nlist": self.nlist,
-                "is_trained": self.index.is_trained if hasattr(self, 'index') and self.index is not None else False,
+                "nlist": self.nlist if self.nlist is not None else 1,
+                "is_trained": self.index.is_trained if hasattr(self.index, 'is_trained') else False,
                 "using_gpu": self.use_gpu,
-                "nprobe": self.index.nprobe if hasattr(self, 'index') and self.index is not None and hasattr(self.index, 'nprobe') else None,
+                "nprobe": self.index.nprobe if hasattr(self.index, 'nprobe') else None,
                 "index_type": "IVFPQ" if hasattr(self.index, 'nlist') else "Flat",
                 "sub_quantizers": 8 if hasattr(self.index, 'nlist') else None,
                 "bits_per_code": 8 if hasattr(self.index, 'nlist') else None
             }
-            logger.info(f"Collection stats: {stats}")
+            logger.info(f"Collection stats: {json.dumps(stats, indent=2)}")
             return stats
         except Exception as e:
-            logger.error(f"Error getting collection stats: {str(e)}")
+            logger.error(f"Error getting collection stats: {str(e)}", exc_info=True)
             raise
     
     def clear(self):
@@ -414,5 +444,38 @@ class VectorStore:
             logger.error(f"Error clearing vector store: {str(e)}")
             raise
 
-# Create a singleton instance
-vector_store = VectorStore() 
+# Create a singleton instance with proper initialization
+def get_vector_store():
+    """Get or create the singleton vector store instance."""
+    try:
+        logger.info("Initializing new vector store instance")
+        # Force reinitialization with new dimension
+        if hasattr(get_vector_store, 'instance'):
+            delattr(get_vector_store, 'instance')
+        
+        get_vector_store.instance = VectorStore()
+        
+        # Ensure the storage directory exists
+        storage_dir = Path("vector_store")
+        storage_dir.mkdir(exist_ok=True)
+        
+        # Load any existing index
+        try:
+            get_vector_store.instance._load_index()
+            logger.info("Successfully loaded existing vector store index")
+        except Exception as e:
+            logger.error(f"Error loading initial vector store: {str(e)}", exc_info=True)
+            logger.info("Resetting vector store to empty state")
+            get_vector_store.instance._reset_index()
+    except Exception as e:
+        logger.error(f"Error initializing vector store: {str(e)}", exc_info=True)
+        raise
+    return get_vector_store.instance
+
+# Initialize the vector store
+try:
+    vector_store = get_vector_store()
+    logger.info("Vector store initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize vector store: {str(e)}", exc_info=True)
+    raise 

@@ -5,12 +5,17 @@ from ..database import get_db
 from ..models import File as DBFile
 from ..schemas import FileRenameRequest
 from ..pdf_processor import extract_text_from_pdf, is_pdf_file
-from ..utils.embeddings import prepare_documents_for_vector_store, generate_embedding
+from ..utils.embeddings import prepare_documents_for_vector_store
+from ..utils.gemini_embeddings import get_query_embedding
 from ..db.vector_store import vector_store
 from sqlalchemy.orm import Session
 from datetime import datetime
 import json
+import logging
 from pydantic import BaseModel
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 class PDFInfo(BaseModel):
     page_count: Optional[int] = None
@@ -104,7 +109,9 @@ async def upload_file(
                     print("Preparing documents for vector store...")
                     chunks, embeddings, chunk_metadata = prepare_documents_for_vector_store(
                         text=pdf_data["text"],
-                        metadata=base_metadata
+                        metadata=base_metadata,
+                        chunk_size=1000,  # Using Langchain's default chunk size
+                        chunk_overlap=200  # Using Langchain's default overlap
                     )
                     print(f"Created {len(chunks)} chunks for vector store")
                     
@@ -296,40 +303,76 @@ async def search_pdf_content(
         if not file.vector_store_ids:
             raise HTTPException(status_code=400, detail="No vector store data available for this file")
         
-        # Generate embedding for the query
-        query_embedding = generate_embedding(query)
+        # Verify vector store state
+        try:
+            vector_store_state = vector_store.verify_state()
+            logger.info(f"Vector store state before search: {json.dumps(vector_store_state, indent=2)}")
+        except Exception as vs_error:
+            logger.error(f"Error verifying vector store state: {str(vs_error)}")
+            raise HTTPException(status_code=500, detail="Vector store is not properly initialized")
         
-        # Search in vector store
-        results = vector_store.search_similar(
-            query_embedding=query_embedding,
-            n_results=n_results
-        )
+        try:
+            # Generate embedding for the query using the correct function
+            query_embedding = get_query_embedding(query)
+            logger.info(f"Generated query embedding with shape: {query_embedding.shape}")
+        except Exception as embedding_error:
+            logger.error(f"Error generating query embedding: {str(embedding_error)}")
+            raise HTTPException(status_code=500, detail=f"Failed to generate query embedding: {str(embedding_error)}")
+        
+        try:
+            # Search in vector store
+            results = vector_store.search_similar(
+                query_embedding=query_embedding,
+                n_results=n_results
+            )
+            logger.info(f"Search completed successfully. Found {len(results.get('documents', []))} results")
+        except Exception as search_error:
+            logger.error(f"Error searching vector store: {str(search_error)}")
+            raise HTTPException(status_code=500, detail=f"Failed to search vector store: {str(search_error)}")
         
         # Format results
         formatted_results = []
         if results and "documents" in results:
             for i in range(len(results["documents"])):
-                # Parse JSON strings back to dictionaries
-                metadata = results.get("metadatas", [{}])[i] or {}
-                parsed_metadata = {}
-                for key, value in metadata.items():
-                    try:
-                        parsed_metadata[key] = json.loads(value)
-                    except (json.JSONDecodeError, TypeError):
-                        parsed_metadata[key] = value
-                
-                formatted_results.append({
-                    "text": results["documents"][i],
-                    "metadata": parsed_metadata,
-                    "similarity": float(results.get("distances", [0.0])[i][0] if results.get("distances") else 0.0)
-                })
+                try:
+                    # Parse JSON strings back to dictionaries
+                    metadata = results.get("metadatas", [{}])[i] or {}
+                    parsed_metadata = {}
+                    for key, value in metadata.items():
+                        try:
+                            parsed_metadata[key] = json.loads(value)
+                        except (json.JSONDecodeError, TypeError):
+                            parsed_metadata[key] = value
+                    
+                    # Convert distance to similarity score (0-100 scale)
+                    distance = float(results.get("distances", [0.0])[i][0] if results.get("distances") else 0.0)
+                    similarity_score = 100.0 * (1.0 / (1.0 + distance))
+                    
+                    formatted_results.append({
+                        "text": results["documents"][i],
+                        "metadata": parsed_metadata,
+                        "similarity_score": round(similarity_score, 2)
+                    })
+                except Exception as result_error:
+                    logger.error(f"Error formatting result {i}: {str(result_error)}")
+                    continue
+        
+        # Sort results by similarity score
+        formatted_results.sort(key=lambda x: x["similarity_score"], reverse=True)
+        
+        # Log search results
+        logger.info(f"Search completed successfully. Found {len(formatted_results)} results")
         
         return {
             "file_id": file.id,
             "filename": file.filename,
             "query": query,
+            "total_results": len(formatted_results),
             "results": formatted_results
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) 
+        logger.error(f"Unexpected error in search_pdf_content: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}") 

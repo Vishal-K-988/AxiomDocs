@@ -17,6 +17,7 @@ from nltk.tokenize import sent_tokenize
 import re
 from transformers import AutoTokenizer, AutoModel
 import torch.nn.functional as F
+from .langchain_utils import langchain_manager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -273,39 +274,31 @@ def generate_embeddings_batch(texts: List[str], batch_size: int = 16) -> List[np
 def prepare_documents_for_vector_store(
     text: str,
     metadata: Dict[str, Any],
-    chunk_size: int = 300,
-    chunk_overlap: int = 30,
-    batch_size: int = 16
+    chunk_size: int = 1000,
+    chunk_overlap: int = 200
 ) -> Tuple[List[str], List[np.ndarray], List[Dict[str, Any]]]:
     """
-    Prepare documents for vector store by splitting into chunks and generating embeddings.
+    Prepare documents for vector store using Langchain.
+    
+    Args:
+        text: The text to process
+        metadata: Base metadata for all chunks
+        chunk_size: Size of text chunks
+        chunk_overlap: Overlap between chunks
+        
+    Returns:
+        Tuple of (chunks, embeddings, chunk_metadata)
     """
     try:
-        if not text or not isinstance(text, str):
-            raise ValueError("Invalid text input")
+        # Split text into chunks using Langchain
+        chunks = langchain_manager.split_text(text)
+        logger.info(f"Split text into {len(chunks)} chunks")
         
-        logger.info("Starting document preparation")
-        logger.info(f"Input text length: {len(text)} characters")
+        # Generate embeddings using Langchain
+        embeddings = langchain_manager.get_embeddings(chunks)
+        logger.info(f"Generated embeddings for {len(chunks)} chunks")
         
-        # Split text into chunks
-        chunks = split_text_into_chunks(text, chunk_size, chunk_overlap)
-        if not chunks:
-            raise ValueError("No valid chunks generated from text")
-        
-        logger.info(f"Created {len(chunks)} chunks")
-        
-        # Generate embeddings in batches
-        logger.info("Starting embedding generation")
-        start_time = time.time()
-        embeddings = generate_embeddings_batch(chunks, batch_size)
-        end_time = time.time()
-        logger.info(f"Generated {len(embeddings)} embeddings in {end_time - start_time:.2f} seconds")
-        
-        if not embeddings:
-            raise ValueError("No embeddings generated")
-        
-        # Prepare metadata for each chunk
-        logger.info("Preparing chunk metadata")
+        # Create chunk metadata
         chunk_metadata = []
         for i, chunk in enumerate(chunks):
             chunk_meta = metadata.copy()
@@ -313,8 +306,10 @@ def prepare_documents_for_vector_store(
                 "chunk_index": i,
                 "total_chunks": len(chunks),
                 "chunk_size": len(chunk),
-                "chunk_text": chunk[:100] + "..." if len(chunk) > 100 else chunk,  # Store preview
-                "embedding_norm": float(np.linalg.norm(embeddings[i]))  # Store embedding norm
+                "chunk_text": chunk[:100] + "..." if len(chunk) > 100 else chunk,
+                "embedding_norm": float(np.linalg.norm(embeddings[i])),
+                "embedding_model": "gemini",
+                "task_type": "retrieval_document"
             })
             chunk_metadata.append(chunk_meta)
         
@@ -322,4 +317,16 @@ def prepare_documents_for_vector_store(
         return chunks, embeddings, chunk_metadata
     except Exception as e:
         logger.error(f"Error in document preparation: {str(e)}")
+        raise
+
+def get_query_embedding(query: str) -> np.ndarray:
+    """
+    Get embedding for a search query using Gemini.
+    Uses RETRIEVAL_QUERY task type for query embeddings.
+    """
+    try:
+        from app.utils.gemini_embeddings import get_gemini_embedding, TaskType
+        return get_gemini_embedding(query, task_type=TaskType.RETRIEVAL_QUERY)
+    except Exception as e:
+        logger.error(f"Error getting query embedding: {str(e)}")
         raise 

@@ -83,9 +83,8 @@ async def upload_pdf(file: UploadFile = File(...)):
         chunks, embeddings, chunk_metadata = prepare_documents_for_vector_store(
             text=text,
             metadata=metadata,
-            chunk_size=300,  # Reduced chunk size
-            chunk_overlap=30,  # Reduced overlap
-            batch_size=16  # Reduced batch size
+            chunk_size=1000,  # Using Langchain's default chunk size
+            chunk_overlap=200  # Using Langchain's default overlap
         )
         
         # Add to vector store
