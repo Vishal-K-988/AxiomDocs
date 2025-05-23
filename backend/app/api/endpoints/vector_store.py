@@ -24,12 +24,12 @@ class DocumentBatch(BaseModel):
 
 class SearchQuery(BaseModel):
     query: str
-    n_results: int = 5
+    n_results: int = Field(default=5, ge=1, le=100)
 
 class SearchResult(BaseModel):
-    text: str
-    metadata: Dict[str, Any]
-    similarity_score: float
+    documents: List[str]
+    metadatas: List[Dict[str, Any]]
+    distances: List[List[float]]
 
 class SearchResponse(BaseModel):
     results: List[SearchResult]
@@ -63,79 +63,55 @@ def flatten_metadata(metadata: Dict[str, Any]) -> Dict[str, str]:
 
 router = APIRouter()
 
-@router.post("/test-vector-store", response_model=SearchResponse)
+@router.post("/test")
 async def test_vector_store():
-    """
-    Test endpoint to verify vector store functionality
-    """
+    """Test the vector store with sample documents."""
     try:
-        # Get vector store state
-        state = vector_store.verify_state()
-        logger.info(f"Initial vector store state: {json.dumps(state, indent=2)}")
-        
-        # Create some test data
-        test_documents = ["This is a test document", "Another test document"]
-        test_embeddings = [
-            [0.1, 0.2, 0.3],  # Simple test embedding
-            [0.2, 0.3, 0.4]   # Simple test embedding
+        # Create test documents
+        test_documents = [
+            "This is a test document about artificial intelligence.",
+            "Machine learning is a subset of AI that focuses on data."
         ]
+        
+        # Generate proper embeddings using Langchain
+        test_embeddings = langchain_manager.get_embeddings(test_documents)
+        
+        # Create test metadata
         test_metadata = [
-            {"source": "test1", "type": "test"},
-            {"source": "test2", "type": "test"}
+            {
+                "source": "test",
+                "type": "test_document",
+                "additional_info": {"test_id": 1}
+            },
+            {
+                "source": "test",
+                "type": "test_document",
+                "additional_info": {"test_id": 2}
+            }
         ]
-        
-        # Flatten metadata
-        flattened_metadata = [flatten_metadata(meta) for meta in test_metadata]
         
         # Add documents to vector store
-        try:
-            vector_store_ids = vector_store.add_documents(test_documents, test_embeddings, flattened_metadata)
-            logger.info(f"Successfully added test documents with IDs: {vector_store_ids}")
-        except Exception as e:
-            logger.error(f"Error adding test documents: {str(e)}", exc_info=True)
-            raise HTTPException(status_code=500, detail=f"Failed to add test documents: {str(e)}")
+        vector_store_ids = vector_store.add_documents(test_documents, test_embeddings, test_metadata)
         
-        # Search for similar documents
-        try:
-            query_embedding = [0.15, 0.25, 0.35]  # Similar to first document
-            results = vector_store.search_similar(query_embedding, n_results=1)
-            logger.info(f"Search results: {json.dumps(results, indent=2)}")
-        except Exception as e:
-            logger.error(f"Error searching test documents: {str(e)}", exc_info=True)
-            raise HTTPException(status_code=500, detail=f"Failed to search test documents: {str(e)}")
+        # Test search
+        query = "What is artificial intelligence?"
+        query_embedding = langchain_manager.get_query_embedding(query)
+        search_results = vector_store.search_similar(query_embedding, n_results=2)
         
-        # Format results according to our response model
-        formatted_results = []
-        if results and "documents" in results:
-            for i in range(len(results["documents"])):
-                try:
-                    # Parse JSON strings back to dictionaries
-                    metadata = results.get("metadatas", [{}])[i] or {}
-                    parsed_metadata = {}
-                    for key, value in metadata.items():
-                        try:
-                            parsed_metadata[key] = json.loads(value)
-                        except (json.JSONDecodeError, TypeError):
-                            parsed_metadata[key] = value
-                    
-                    formatted_results.append(
-                        SearchResult(
-                            text=str(results["documents"][i]),
-                            metadata=parsed_metadata,
-                            similarity_score=float(results.get("distances", [0.0])[i][0] if results.get("distances") else 0.0)
-                        )
-                    )
-                except Exception as e:
-                    logger.error(f"Error formatting result {i}: {str(e)}", exc_info=True)
-                    continue
+        # Clean up test data
+        vector_store.clear()
         
-        return SearchResponse(results=formatted_results)
-        
-    except HTTPException:
-        raise
+        return {
+            "status": "success",
+            "message": "Vector store test completed successfully",
+            "test_results": {
+                "documents_added": len(vector_store_ids),
+                "search_results": search_results
+            }
+        }
     except Exception as e:
-        logger.error(f"Unexpected error in vector store test: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Vector store test failed: {str(e)}")
+        logger.error(f"Error testing vector store: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/stats", response_model=VectorStoreStats)
 async def get_vector_store_stats():
@@ -177,9 +153,9 @@ async def search_documents(query: SearchQuery):
             
             formatted_results.append(
                 SearchResult(
-                    text=results["documents"][i],
-                    metadata=results["metadatas"][i],
-                    similarity_score=round(similarity_score, 2)
+                    documents=[results["documents"][i]],
+                    metadatas=[results["metadatas"][i]],
+                    distances=[[distance]]
                 )
             )
         
