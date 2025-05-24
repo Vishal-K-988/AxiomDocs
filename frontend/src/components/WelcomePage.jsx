@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { UserButton, useAuth } from '@clerk/clerk-react';
+import { UserButton, useAuth, useUser } from '@clerk/clerk-react';
 import { Plus, Send } from 'lucide-react';
 import FileUploadModal from './FileUploadModal';
 import Sidebar from './Sidebar';
-import { fileService } from '../services/fileService';
+import { fileService, chatService } from '../services/fileService';
+import ChatInterface from './ChatInterface';
 
 const WelcomePage = () => {
   const { isLoaded, isSignedIn } = useAuth();
@@ -13,6 +14,12 @@ const WelcomePage = () => {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [conversationId, setConversationId] = useState(null);
+  const [chatHistory, setChatHistory] = useState([]);
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const { user } = useUser();
+  const userProfileImage = user?.imageUrl;
 
   // Fetch files on component mount and when auth state changes
   useEffect(() => {
@@ -90,6 +97,87 @@ const WelcomePage = () => {
     setIsSidebarCollapsed(prev => !prev);
   };
 
+  // Start conversation and send message
+  const handleSendMessage = async (messageText) => {
+    if (!selectedFile || !messageText.trim()) return;
+    setIsChatLoading(true);
+    try {
+      let convId = conversationId;
+      // If no conversation started, create one
+      if (!convId) {
+        // Use file name as title, userId from Clerk
+        const userId = window.Clerk?.user?.id;
+        const conversation = await chatService.createConversation(userId, selectedFile.name);
+        convId = conversation.id;
+        setConversationId(convId);
+      }
+      // Send message
+      const response = await chatService.sendMessage(convId, messageText, [selectedFile.id]);
+      // Update chat history
+      setChatHistory((prev) => [
+        ...prev,
+        { sender: 'user', content: messageText, timestamp: new Date().toISOString() },
+        { sender: 'ai', content: response.message.content, timestamp: new Date().toISOString() },
+      ]);
+    } catch (err) {
+      setChatHistory((prev) => [
+        ...prev,
+        { sender: 'user', content: messageText, timestamp: new Date().toISOString() },
+        { sender: 'ai', content: 'Error: Could not get AI response.', timestamp: new Date().toISOString() },
+      ]);
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
+
+  // When a file is selected, fetch or create a persistent conversation for that file
+  useEffect(() => {
+    if (!selectedFile) {
+      setConversationId(null);
+      setChatHistory([]);
+      return;
+    }
+    let isMounted = true;
+    const fetchOrCreateConversation = async () => {
+      setIsChatLoading(true);
+      try {
+        // Try to fetch existing conversation for this file
+        const userId = window.Clerk?.user?.id;
+        let conversation = null;
+        try {
+          conversation = await chatService.getConversationByFile(selectedFile.id);
+        } catch (err) {
+          // Not found, will create
+        }
+        let convId;
+        if (conversation) {
+          convId = conversation.id;
+          setConversationId(convId);
+          // Load messages as chat history
+          const messages = (conversation.messages || []).map(msg => ({
+            sender: msg.message_type === 'user' ? 'user' : 'ai',
+            content: msg.content,
+            timestamp: msg.created_at,
+          }));
+          if (isMounted) setChatHistory(messages);
+        } else {
+          // Create new conversation for this file
+          const newConv = await chatService.createConversation(userId, selectedFile.name, selectedFile.id);
+          convId = newConv.id;
+          setConversationId(convId);
+          if (isMounted) setChatHistory([]);
+        }
+      } catch (err) {
+        setConversationId(null);
+        setChatHistory([]);
+      } finally {
+        setIsChatLoading(false);
+      }
+    };
+    fetchOrCreateConversation();
+    return () => { isMounted = false; };
+  }, [selectedFile]);
+
   if (!isLoaded) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -114,7 +202,7 @@ const WelcomePage = () => {
     <div className="min-h-screen bg-gray-50 flex flex-col">
       {/* Header */}
       <header className="w-full border-b border-gray-200 bg-white shadow-sm">
-        <div className="container mx-auto px-6 py-4 flex items-center justify-between">
+        <div className="mx-auto w-full max-w-screen-xl px-4 sm:px-6 lg:px-8 xl:px-0 py-4 flex items-center justify-between gap-x-16 ai-style-change-1" style={{ columnGap: '120px' }}>
           {/* Logo or App Name */}
           <div className="flex items-center gap-2">
             <img src="/src/assests/logo.png" alt="Logo" className="h-8 w-8" />
@@ -174,6 +262,14 @@ const WelcomePage = () => {
             <div className="flex items-center justify-center h-full">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600"></div>
             </div>
+          ) : selectedFile ? (
+            <ChatInterface
+              selectedFile={selectedFile}
+              chatHistory={chatHistory}
+              onSendMessage={handleSendMessage}
+              isLoading={isChatLoading}
+              userProfileImage={userProfileImage}
+            />
           ) : (
             <div className="text-center text-gray-500">
               Select a file from the sidebar to view its contents
@@ -186,30 +282,10 @@ const WelcomePage = () => {
           onToggle={toggleSidebar}
           onRename={handleRenameFile}
           onDelete={handleDeleteFile}
+          onSelect={setSelectedFile}
+          selectedFile={selectedFile}
         />
       </main>
-
-      {/* Bottom Prompt Input */}
-      <footer className="w-full border-t border-gray-200 bg-white fixed bottom-0 left-0 z-20">
-        <div className="container mx-auto px-4 py-4">
-          <form onSubmit={handleSubmit} className="w-full flex items-center gap-2">
-            <input
-              type="text"
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              placeholder="Ask a question about your documents..."
-              className="flex-1 rounded-lg border border-gray-200 px-4 py-3 bg-gray-50 text-gray-900 focus:outline-none focus:ring-2 focus:ring-green-200 focus:border-transparent"
-            />
-            <button
-              type="submit"
-              disabled={!question.trim()}
-              className="bg-green-600 hover:bg-green-700 text-white px-4 py-3 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-            >
-              <Send className="w-5 h-5" />
-            </button>
-          </form>
-        </div>
-      </footer>
 
       {/* File Upload Modal */}
       <FileUploadModal

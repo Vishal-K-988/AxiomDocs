@@ -1,12 +1,17 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
-from app.db.vector_store import vector_store
-from app.utils.embeddings import prepare_documents_for_vector_store
-import PyPDF2
-import os
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Header
+from sqlalchemy.orm import Session
 from typing import List, Dict, Any
-import tempfile
 import logging
 import gc
+from ..database import get_db
+from ..models import File
+from ..db.vector_store import vector_store
+from ..utils.embeddings import prepare_documents_for_vector_store
+from ..s3 import get_file_from_s3
+import PyPDF2
+import os
+import tempfile
+import io
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -14,68 +19,79 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-async def extract_text_from_pdf(file_path: str) -> str:
-    """Extract text from a PDF file."""
+def get_user_id(x_user_id: str = Header(...)) -> str:
+    return x_user_id
+
+async def extract_text_from_pdf(file_content: bytes) -> str:
+    """Extract text from PDF content."""
     try:
-        logger.info(f"Extracting text from PDF: {file_path}")
-        with open(file_path, 'rb') as file:
-            reader = PyPDF2.PdfReader(file)
-            text = ""
-            total_pages = len(reader.pages)
-            logger.info(f"PDF has {total_pages} pages")
+        logger.info("Extracting text from PDF content")
+        pdf_file = io.BytesIO(file_content)
+        reader = PyPDF2.PdfReader(pdf_file)
+        text = ""
+        total_pages = len(reader.pages)
+        logger.info(f"PDF has {total_pages} pages")
+        
+        for i, page in enumerate(reader.pages):
+            logger.debug(f"Processing page {i+1}/{total_pages}")
+            page_text = page.extract_text()
+            text += page_text + "\n"
             
-            for i, page in enumerate(reader.pages):
-                logger.debug(f"Processing page {i+1}/{total_pages}")
-                page_text = page.extract_text()
-                text += page_text + "\n"
-                
-                # Force garbage collection after each page
-                if i % 5 == 0:  # Every 5 pages
-                    gc.collect()
-            
-            logger.info(f"Successfully extracted {len(text)} characters from PDF")
-            return text
+            # Force garbage collection after each page
+            if i % 5 == 0:  # Every 5 pages
+                gc.collect()
+        
+        logger.info(f"Successfully extracted {len(text)} characters from PDF")
+        return text
     except Exception as e:
         logger.error(f"Error extracting text from PDF: {str(e)}")
         raise HTTPException(status_code=400, detail=f"Error extracting text from PDF: {str(e)}")
 
-@router.post("/upload-pdf")
-async def upload_pdf(file: UploadFile = File(...)):
+@router.post("/process-pdf/{file_id}")
+async def process_pdf(
+    file_id: int,
+    user_id: str = Depends(get_user_id),
+    db: Session = Depends(get_db)
+):
     """
-    Upload a PDF file, extract its text, and store it in the vector store.
+    Process a PDF file from S3, extract its text, and store it in the vector store.
     
     Args:
-        file: The PDF file to upload
+        file_id: The ID of the file to process
+        user_id: The user ID from the header
         
     Returns:
-        Dict containing upload status and document IDs
+        Dict containing processing status and document IDs
     """
-    if not file.filename.endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="File must be a PDF")
-    
     try:
-        logger.info(f"Processing PDF upload: {file.filename}")
+        # Get file from database
+        file = db.query(File).filter(
+            File.id == file_id,
+            File.user_id == user_id,
+            File.is_pdf == True
+        ).first()
         
-        # Clear existing documents from vector store
-        logger.info("Clearing existing documents from vector store")
-        vector_store.clear()
+        if not file:
+            raise HTTPException(status_code=404, detail="PDF file not found")
         
-        # Create a temporary file to store the uploaded PDF
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
-            logger.info("Reading uploaded file content")
-            content = await file.read()
-            temp_file.write(content)
-            temp_file_path = temp_file.name
-            logger.info(f"Saved temporary file at: {temp_file_path}")
+        logger.info(f"Processing PDF file: {file.filename}")
+        
+        # Get file content from S3
+        try:
+            file_content = get_file_from_s3(file.s3_key)
+        except Exception as s3_error:
+            logger.error(f"Error getting file from S3: {str(s3_error)}")
+            raise HTTPException(status_code=500, detail=f"Error getting file from S3: {str(s3_error)}")
         
         # Extract text from PDF
-        text = await extract_text_from_pdf(temp_file_path)
+        text = await extract_text_from_pdf(file_content)
         
         # Prepare metadata
         metadata = {
             "source": file.filename,
             "type": "pdf",
-            "file_path": temp_file_path
+            "file_id": file.id,
+            "user_id": user_id
         }
         
         # Prepare documents for vector store
@@ -83,8 +99,8 @@ async def upload_pdf(file: UploadFile = File(...)):
         chunks, embeddings, chunk_metadata = prepare_documents_for_vector_store(
             text=text,
             metadata=metadata,
-            chunk_size=1000,  # Using Langchain's default chunk size
-            chunk_overlap=200  # Using Langchain's default overlap
+            chunk_size=1000,
+            chunk_overlap=200
         )
         
         # Add to vector store
@@ -95,9 +111,9 @@ async def upload_pdf(file: UploadFile = File(...)):
             metadata=chunk_metadata
         )
         
-        # Clean up temporary file
-        logger.info("Cleaning up temporary file")
-        os.unlink(temp_file_path)
+        # Update file with vector store IDs
+        file.vector_store_ids = doc_ids
+        db.commit()
         
         # Force garbage collection
         gc.collect()
@@ -110,11 +126,10 @@ async def upload_pdf(file: UploadFile = File(...)):
             "chunks_processed": len(chunks)
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing PDF: {str(e)}")
-        # Clean up temporary file in case of error
-        if 'temp_file_path' in locals():
-            os.unlink(temp_file_path)
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/search")

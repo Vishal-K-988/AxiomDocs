@@ -55,7 +55,15 @@ export const fileService = {
   getFiles: async () => {
     try {
       const response = await api.get('/files');
-      return response.data;
+      // Always return an array, even if response.data.files is undefined or not an array
+      if (response.data && Array.isArray(response.data.files)) {
+        return response.data.files;
+      } else if (response.data && response.data.files && typeof response.data.files === 'object') {
+        // If files is an object (not array), wrap in array
+        return [response.data.files];
+      } else {
+        return [];
+      }
     } catch (error) {
       throw handleApiError(error);
     }
@@ -106,4 +114,29 @@ const handleApiError = (error) => {
     // Something happened in setting up the request that triggered an Error
     throw new Error('Error setting up the request.');
   }
+};
+
+// --- Chat/Conversation Service ---
+export const chatService = {
+  createConversation: async (userId, title, fileId) => {
+    const response = await api.post('/chat/conversations', {
+      user_id: userId,
+      title,
+      file_id: fileId,
+    });
+    return response.data;
+  },
+  getConversationByFile: async (fileId) => {
+    const response = await api.get(`/chat/conversations/by-file/${fileId}`);
+    return response.data;
+  },
+  sendMessage: async (conversationId, content, referencedDocuments = []) => {
+    const response = await api.post(`/chat/conversations/${conversationId}/messages`, {
+      content,
+      message_type: 'user',
+      referenced_documents: referencedDocuments,
+      conversation_id: conversationId,
+    });
+    return response.data;
+  },
 }; 

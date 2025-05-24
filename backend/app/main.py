@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routers import files
+from .routers import files, chat
 from .api.endpoints import vector_store
 from .database import engine
 from .models import Base
@@ -27,6 +27,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(files.router)
+app.include_router(chat.router)
 app.include_router(vector_store.router, prefix="/api/vector-store", tags=["vector-store"])
 app.include_router(pdf_routes.router, prefix="/api/pdf", tags=["pdf"])
 

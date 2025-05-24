@@ -31,11 +31,24 @@ def get_query_embedding(text: str) -> np.ndarray:
     """
     try:
         # Get embedding from Gemini
-        response = model.embed_content(text)
-        embedding = np.array(response.embedding, dtype=np.float32)
+        response = genai.embed_content(
+            model="models/embedding-001",
+            content=text,
+            task_type="retrieval_query"
+        )
+        embedding = np.array(response["embedding"], dtype=np.float32)
         
         # Log the embedding shape for debugging
         logger.info(f"Generated embedding with shape: {embedding.shape}")
+        
+        # Ensure correct dimension (384 for Gemini)
+        if embedding.shape[0] != 384:
+            logger.warning(f"Unexpected embedding dimension: {embedding.shape[0]}, expected 384")
+            if embedding.shape[0] == 768:
+                # Take first 384 dimensions if we got 768
+                embedding = embedding[:384]
+            else:
+                raise ValueError(f"Invalid embedding dimension: {embedding.shape[0]}")
         
         # Normalize the embedding
         norm = np.linalg.norm(embedding)
@@ -62,10 +75,14 @@ def get_batch_embeddings(texts: List[str], batch_size: int = 16) -> List[np.ndar
         embeddings = []
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
-            batch_results = model.embed_content(batch)
+            batch_results = genai.embed_content(
+                model="models/embedding-001",
+                content=batch,
+                task_type="retrieval_document"
+            )
             
-            for result in batch_results:
-                embedding = np.array(result.embedding, dtype=np.float32)
+            for result in batch_results["embedding"]:
+                embedding = np.array(result, dtype=np.float32)
                 # Log the embedding shape for debugging
                 logger.info(f"Generated batch embedding with shape: {embedding.shape}")
                 

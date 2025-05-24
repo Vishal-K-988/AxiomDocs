@@ -74,6 +74,29 @@ def upload_file_to_s3(file_data: bytes,
         print(error_msg)
         raise Exception(error_msg)
 
+def get_file_from_s3(s3_key: str) -> bytes:
+    """
+    Retrieve a file from S3.
+    
+    Args:
+        s3_key: The S3 key of the file to retrieve
+        
+    Returns:
+        bytes: The file content
+        
+    Raises:
+        Exception: If the retrieval fails
+    """
+    try:
+        response = s3_client.get_object(
+            Bucket=BUCKET_NAME,
+            Key=s3_key
+        )
+        return response['Body'].read()
+    except ClientError as e:
+        error_msg = f"Error retrieving file from S3: {str(e)}"
+        print(error_msg)
+        raise Exception(error_msg)
 
 # 2. Deleting file 
 def delete_file_from_s3(s3_key: str) -> bool:

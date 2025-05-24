@@ -26,7 +26,7 @@ const formatFileSize = (bytes) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
-const FileCard = ({ file, onRename, onDelete }) => {
+const FileCard = ({ file, onRename, onDelete, onSelect, isSelected }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
   const [newName, setNewName] = useState(file?.name || '');
@@ -50,7 +50,10 @@ const FileCard = ({ file, onRename, onDelete }) => {
   if (!file) return null;
 
   return (
-    <div className="group p-3 rounded-lg border border-gray-200 hover:border-green-500 hover:shadow-md transition-all duration-200 cursor-pointer bg-white">
+    <div
+      className={`group p-3 rounded-lg border border-gray-200 hover:border-green-500 hover:shadow-md transition-all duration-200 cursor-pointer bg-white ${isSelected ? 'border-green-600 ring-2 ring-green-100' : ''}`}
+      onClick={() => onSelect && onSelect(file)}
+    >
       <div className="flex items-start gap-3">
         <div className="p-2 bg-gray-50 rounded-md group-hover:bg-green-50 transition-colors">
           {getFileIcon(file.name)}
@@ -139,7 +142,7 @@ const FileCard = ({ file, onRename, onDelete }) => {
   );
 };
 
-const Sidebar = ({ files = [], isCollapsed, onToggle, onRename, onDelete }) => {
+const Sidebar = ({ files = [], isCollapsed, onToggle, onRename, onDelete, onSelect, selectedFile }) => {
   return (
     <div className={`relative flex transition-all duration-300 ease-in-out ${isCollapsed ? 'w-0' : 'w-80'}`}>
       <div className={`border-l border-gray-200 bg-white h-full overflow-y-auto transition-all duration-300 ${isCollapsed ? 'w-0 opacity-0' : 'w-80 opacity-100'}`}>
@@ -158,6 +161,8 @@ const Sidebar = ({ files = [], isCollapsed, onToggle, onRename, onDelete }) => {
                 file={file}
                 onRename={onRename}
                 onDelete={onDelete}
+                onSelect={onSelect}
+                isSelected={selectedFile && selectedFile.id === file.id}
               />
             ))}
             

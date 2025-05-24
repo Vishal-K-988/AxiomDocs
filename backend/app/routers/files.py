@@ -183,12 +183,12 @@ async def list_files(
                 s3_url=file.s3_key,
                 upload_time=file.created_at.isoformat(),
                 size=file.file_size,
-                is_pdf=file.is_pdf,
+                is_pdf=file.is_pdf if file.is_pdf is not None else False,
                 pdf_info=PDFInfo(
                     page_count=file.pdf_page_count,
                     metadata=json.loads(file.pdf_metadata) if file.pdf_metadata else None,
                     text=file.pdf_text
-                ) if file.is_pdf else None
+                ) if (file.is_pdf if file.is_pdf is not None else False) else None
             )
             for file in files
         ]
@@ -210,12 +210,12 @@ async def get_file(
         s3_url=file.s3_key,
         upload_time=file.created_at.isoformat(),
         size=file.file_size,
-        is_pdf=file.is_pdf,
+        is_pdf=file.is_pdf if file.is_pdf is not None else False,
         pdf_info=PDFInfo(
             page_count=file.pdf_page_count,
             metadata=json.loads(file.pdf_metadata) if file.pdf_metadata else None,
             text=file.pdf_text
-        ) if file.is_pdf else None
+        ) if (file.is_pdf if file.is_pdf is not None else False) else None
     )
 
 @router.delete("/{file_id}", response_model=FileDeleteResponse)
