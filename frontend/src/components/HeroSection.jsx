@@ -57,8 +57,11 @@ const HeroSection = () => {
           </div>
         )}
         
-        <button className="px-6 py-3 border border-gray-300 text-green-600 rounded-md hover:bg-gray-50 transition-colors duration-300 font-medium flex items-center justify-center">
-          Docs
+        <button 
+          onClick={() => window.open('https://vishalk988.notion.site/Axiom-Docs-Documentation-1fd8a65a485180b69baac4f700a7682e?pvs=4', '_blank')}
+          className="px-6 py-3 border border-gray-300 text-green-600 rounded-md hover:bg-gray-50 transition-colors duration-300 font-medium flex items-center justify-center"
+        >
+          <span>Docs</span>
           <ArrowRight className="ml-2 h-4 w-4" />
         </button>
       </div>
