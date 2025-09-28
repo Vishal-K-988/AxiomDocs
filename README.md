@@ -3,6 +3,9 @@
 ## Project Overview
 This project is a sophisticated file management system that combines modern web technologies with AI capabilities. It features a React-based frontend and a FastAPI backend, providing a seamless experience for file management, PDF processing, and AI-powered document interaction.
 
+## Working Video 
+https://drive.google.com/file/d/1DVKwiVIc6HVCcfoEITgRKb1THtIgFS_5/view?usp=sharing
+
 ## Architecture
 
 ### Frontend
